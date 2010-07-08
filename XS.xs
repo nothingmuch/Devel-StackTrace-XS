@@ -20,6 +20,8 @@
 #define STRINGIFY_ERR 0x40
 #define RESPECT_OVERLOAD_ERR 0x80
 
+#define STRINGIFY_CV 0x100
+
 #define SEPARATE_HASARGS
 
 /* this data can be just freed without refcounting */
@@ -107,7 +109,7 @@ dopoptosub_at(pTHX_ const PERL_CONTEXT *cxstk, I32 startingblock)
 
 /* stringify is a macro... */
 STATIC SV *
-plz_stringify (SV *sv, bool overload) {
+plz_stringify (pTHX_ SV *sv, bool overload) {
     if ( !SvROK(sv) || overload ) {
         /* stringify normally */
         STRLEN len;
@@ -122,6 +124,20 @@ plz_stringify (SV *sv, bool overload) {
         } else {
             return newSVpvf("%s(0x%p)", sv_reftype(rv, FALSE), rv);
         }
+    }
+}
+
+STATIC SV *
+cv_name (pTHX_ CV *cv) {
+    GV * const cvgv = CvGV(cv);/* ccstack[cxix].blk_sub.cv */
+    /* So is ccstack[dbcxix]. */
+    if (isGV(cvgv)) {
+        SV * const sv = newSV(0);
+        gv_efullname3(sv, cvgv, NULL);
+        return sv;
+    }
+    else {
+        return newSVpvs("(unknown)");
     }
 }
 
@@ -175,7 +191,7 @@ build_trace (pTHX_ const I32 uplevel, const I32 flags) {
             av_push(
                     refcounted,
                     flags & STRINGIFY_ERR
-                    ? plz_stringify(ERRSV, flags & RESPECT_OVERLOAD_ERR)
+                    ? plz_stringify(aTHX_ ERRSV, flags & RESPECT_OVERLOAD_ERR)
                     : newSVsv(ERRSV)
                    );
         }
@@ -218,11 +234,12 @@ build_trace (pTHX_ const I32 uplevel, const I32 flags) {
                             AV *args = newAV();
 
                             if ( flags & STRINGIFY_ARGS ) {
-                                av_extend(args, av_len(ary));
+                                I32 len = av_len(ary);
+                                av_extend(args, len+1);
 
-                                for ( j = 0; j < av_len(ary); j++ ) {
+                                for ( j = 0; j <= len; j++ ) {
                                     SV **p = av_fetch(ary, j, FALSE);
-                                    SV *str = plz_stringify(*p, (flags & RESPECT_OVERLOAD_ARGS) );
+                                    SV *str = plz_stringify(aTHX_ *p, (flags & RESPECT_OVERLOAD_ARGS) );
                                     av_push(args, str);
                                 }
                             } else {
@@ -239,8 +256,13 @@ build_trace (pTHX_ const I32 uplevel, const I32 flags) {
                             av_push(refcounted, (SV *)args);
                         }
 
-                        if ( save_refs & SAVE_CV )
-                            av_push(refcounted, (SV *)cx->blk_sub.cv);
+                        if ( save_refs & SAVE_CV ) {
+                            if ( flags & STRINGIFY_CV ) {
+                                av_push(refcounted, cv_name(cx->blk_sub.cv));
+                            } else {
+                                av_push(refcounted, SvREFCNT_inc((SV *)cx->blk_sub.cv));
+                            }
+                        }
                     } else if (CxTYPE(cx) == CXt_EVAL && save_refs & SAVE_EVAL_TEXT ) {
                         av_push(refcounted, newSVsv(cx->blk_eval.cur_text));
                     }
@@ -291,21 +313,15 @@ frame_to_caller (pTHX_ I32 i, struct frames_info *fi) {
     av_push(av, newSViv((I32)CopLINE(cx->blk_oldcop)));
 
     if (CxTYPE(cx) == CXt_SUB || CxTYPE(cx) == CXt_FORMAT) {
-        int hasargs = (CxHASARGS(cx) && (fi->flags & SAVE_ARGS) ? 1 : 0 );
-        CV *cv = (CV *)*av_fetch(fi->refcounted, cx->offset + hasargs, FALSE);
+        if ( fi->flags & SAVE_CV ) {
+            int hasargs = (CxHASARGS(cx) && (fi->flags & SAVE_ARGS) ? 1 : 0 );
+            SV *sv = *av_fetch(fi->refcounted, cx->offset + hasargs, FALSE);
+            av_push( av, fi->flags & STRINGIFY_CV ? sv : cv_name(aTHX_ (CV *)sv) );
+        } else {
+            av_push( av, newSVpvs("(unknown)") );
+        }
 
-        GV * const cvgv = CvGV(cv);/* ccstack[cxix].blk_sub.cv */
-        /* So is ccstack[dbcxix]. */
-        if (isGV(cvgv)) {
-            SV * const sv = newSV(0);
-            gv_efullname3(sv, cvgv, NULL);
-            av_push(av, sv);
-            av_push(av, boolSV(CxHASARGS(cx)));
-        }
-        else {
-            av_push(av, newSVpvs_flags("(unknown)", SVs_TEMP));
-            av_push(av, boolSV(CxHASARGS(cx)));
-        }
+        av_push(av, boolSV(CxHASARGS(cx)));
     }
     else {
         av_push(av, newSVpvs_flags("(eval)", SVs_TEMP));
@@ -404,21 +420,26 @@ MODULE = Devel::StackTrace::XS PACKAGE = Devel::StackTrace::XS
 PROTOTYPES: DISABLE
 
 void
-_xs_record_caller_data (self, raw, flags)
-        SV *self
-        AV *raw
+_xs_record_caller_data (self, flags)
+        HV *self
         I32 flags
+    PREINIT:
+        SV *sv = newSVpvs("SvMAGIC stack trace");
     CODE:
-        add_trace(aTHX_ (SV *)raw, 1, flags | SAVE_CV);
+        add_trace(aTHX_ (SV *)sv, 1, flags );
+        hv_stores(self, "raw", newRV_noinc(sv));
 
 
 void
-_build_raw (self, raw)
-        SV *self
-        AV *raw
+_get_raw_frames (self)
+        HV *self
+    PREINIT:
+        SV *sv;
+        SV **svp;
     PPCODE:
-        if (SvTYPE((SV *)raw) >= SVt_PVMG) {
-            SV *sv = (SV *)raw;
+        svp = hv_fetchs(self, "raw", FALSE);
+        sv = svp && SvROK(*svp) ? SvRV(*svp) : NULL;
+        if ( sv && SvTYPE(sv) >= SVt_PVMG) {
             MAGIC *mg;
             for (mg = SvMAGIC(sv); mg; mg = mg->mg_moremagic) {
                 if (
@@ -432,7 +453,9 @@ _build_raw (self, raw)
                     EXTEND(SP, fi->count);
                     for ( i = 0; i < fi->count; i++ ) {
                         AV *caller = frame_to_caller(i, fi);
-                        AV *args = newAV();
+                        AV *args = (CxHASARGS(&fi->frames[i]) && (fi->flags & SAVE_ARGS) ? 1 : 0 )
+                            ? (AV *)*av_fetch(fi->refcounted, fi->frames[i].offset, FALSE)
+                            : newAV();
 
                         HV *hv = newHV();
                         hv_stores(hv, "args", newRV_noinc((SV *)args));

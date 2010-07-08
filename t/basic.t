@@ -5,14 +5,16 @@ use warnings;
 
 use Test::More;
 
-use Devel::Peek;
 use ok 'Devel::StackTrace::XS';
 
-sub Foo::foo { Devel::StackTrace::XS->new, Devel::StackTrace->new }
-sub bar { Foo::foo() }
-sub baz { bar() }
+sub Foo::foo { map { $_->new } @_ }
+sub bar { Foo::foo(@_) }
+sub gorch { bar(@_) }
+sub quxx { gorch(@_) }
+sub zot { quxx(@_) }
+sub baz { zot(@_) }
 
-my ( $xs, $pp ) = baz();
+my ( $xs, $pp ) = baz(qw(Devel::StackTrace::XS Devel::StackTrace));
 
 is( $xs->as_string, $pp->as_string, "stack dump is the same" );
 
