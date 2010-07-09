@@ -8,6 +8,11 @@
 
 #include "devel_stacktrace_xs.h"
 
+#ifndef aTHX_
+#define aTHX_
+#endif
+
+
 #define SAVE_ERR 0x01
 #define SAVE_ARGS 0x02
 #define SAVE_CV 0x04
@@ -156,7 +161,7 @@ build_trace (pTHX_ const I32 uplevel, const I32 flags) {
     struct frames_info *fi;
     AV *refcounted = NULL;
 
-    cxix = dopoptosub_at(cxstack, cxstack_ix);
+    cxix = dopoptosub_at(aTHX_ cxstack, cxstack_ix);
 
     count = 0-uplevel;
 
@@ -165,7 +170,7 @@ build_trace (pTHX_ const I32 uplevel, const I32 flags) {
         while (cxix < 0 && top_si->si_type != PERLSI_MAIN) {
             top_si = top_si->si_prev;
             ccstack = top_si->si_cxstack;
-            cxix = dopoptosub_at(ccstack, top_si->si_cxix);
+            cxix = dopoptosub_at(aTHX_ ccstack, top_si->si_cxix);
         }
 
         if (cxix < 0)
@@ -175,7 +180,7 @@ build_trace (pTHX_ const I32 uplevel, const I32 flags) {
         if (!PL_DBsub || !GvCV(PL_DBsub) || ccstack[cxix].blk_sub.cv != GvCV(PL_DBsub))
             count++;
 
-        cxix = dopoptosub_at(ccstack, cxix - 1);
+        cxix = dopoptosub_at(aTHX_ ccstack, cxix - 1);
     }
 
     if ( count <= 0 )
@@ -197,7 +202,7 @@ build_trace (pTHX_ const I32 uplevel, const I32 flags) {
         }
     }
 
-    cxix = dopoptosub_at(cxstack, cxstack_ix);
+    cxix = dopoptosub_at(aTHX_ cxstack, cxstack_ix);
     ccstack = cxstack;
     i = 0;
     skip = uplevel;
@@ -206,7 +211,7 @@ build_trace (pTHX_ const I32 uplevel, const I32 flags) {
         while (cxix < 0 && top_si->si_type != PERLSI_MAIN) {
             top_si = top_si->si_prev;
             ccstack = top_si->si_cxstack;
-            cxix = dopoptosub_at(ccstack, top_si->si_cxix);
+            cxix = dopoptosub_at(aTHX_ ccstack, top_si->si_cxix);
         }
 
         if (cxix < 0)
@@ -258,7 +263,7 @@ build_trace (pTHX_ const I32 uplevel, const I32 flags) {
 
                         if ( save_refs & SAVE_CV ) {
                             if ( flags & STRINGIFY_CV ) {
-                                av_push(refcounted, cv_name(cx->blk_sub.cv));
+                                av_push(refcounted, cv_name(aTHX_ cx->blk_sub.cv));
                             } else {
                                 av_push(refcounted, SvREFCNT_inc((SV *)cx->blk_sub.cv));
                             }
@@ -272,7 +277,7 @@ build_trace (pTHX_ const I32 uplevel, const I32 flags) {
             }
         }
 
-        cxix = dopoptosub_at(ccstack, cxix - 1);
+        cxix = dopoptosub_at(aTHX_ ccstack, cxix - 1);
     }
 
     Newx(fi, 1, struct frames_info);
@@ -452,7 +457,7 @@ _get_raw_frames (self)
 
                     EXTEND(SP, fi->count);
                     for ( i = 0; i < fi->count; i++ ) {
-                        AV *caller = frame_to_caller(i, fi);
+                        AV *caller = frame_to_caller(aTHX_ i, fi);
                         AV *args = (CxHASARGS(&fi->frames[i]) && (fi->flags & SAVE_ARGS) ? 1 : 0 )
                             ? (AV *)*av_fetch(fi->refcounted, fi->frames[i].offset, FALSE)
                             : newAV();
